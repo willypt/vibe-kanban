@@ -5296,7 +5296,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.0.143"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
