@@ -43,7 +43,7 @@ fn base_command(claude_code_router: bool) -> &'static str {
     if claude_code_router {
         "npx -y @musistudio/claude-code-router@1.0.66 code"
     } else {
-        "npx -y @anthropic-ai/claude-code@2.0.75"
+        "npx -y @anthropic-ai/claude-code@2.0.76"
     }
 }
 
@@ -368,7 +368,10 @@ impl ClaudeLogProcessor {
             while let Some(Ok(msg)) = stream.next().await {
                 let chunk = match msg {
                     LogMsg::Stdout(x) => x,
-                    LogMsg::JsonPatch(_) | LogMsg::SessionId(_) | LogMsg::Stderr(_) => continue,
+                    LogMsg::JsonPatch(_)
+                    | LogMsg::SessionId(_)
+                    | LogMsg::Stderr(_)
+                    | LogMsg::Ready => continue,
                     LogMsg::Finished => break,
                 };
 

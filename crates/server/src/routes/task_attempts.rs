@@ -4,6 +4,7 @@ pub mod gh_cli_setup;
 pub mod images;
 pub mod pr;
 pub mod util;
+pub mod workspace_summary;
 
 use std::{
     collections::HashMap,
@@ -19,9 +20,10 @@ use axum::{
     http::StatusCode,
     middleware::from_fn_with_state,
     response::{IntoResponse, Json as ResponseJson},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use db::models::{
+    coding_agent_turn::CodingAgentTurn,
     execution_process::{ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus},
     merge::{Merge, MergeStatus, PrMerge, PullRequestInfo},
     project_repo::ProjectRepo,
@@ -45,7 +47,7 @@ use serde::{Deserialize, Serialize};
 use services::services::{
     container::ContainerService,
     git::{ConflictOp, GitCliError, GitServiceError},
-    github::GitHubService,
+    workspace_manager::WorkspaceManager,
 };
 use sqlx::Error as SqlxError;
 use ts_rs::TS;
@@ -88,6 +90,19 @@ pub struct DiffStreamQuery {
     pub stats_only: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct WorkspaceStreamQuery {
+    pub archived: Option<bool>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, TS)]
+pub struct UpdateWorkspace {
+    pub archived: Option<bool>,
+    pub pinned: Option<bool>,
+    pub name: Option<String>,
+}
+
 pub async fn get_task_attempts(
     State(deployment): State<DeploymentImpl>,
     Query(query): Query<TaskAttemptQuery>,
@@ -101,6 +116,26 @@ pub async fn get_task_attempt(
     Extension(workspace): Extension<Workspace>,
 ) -> Result<ResponseJson<ApiResponse<Workspace>>, ApiError> {
     Ok(ResponseJson(ApiResponse::success(workspace)))
+}
+
+pub async fn update_workspace(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Json(request): Json<UpdateWorkspace>,
+) -> Result<ResponseJson<ApiResponse<Workspace>>, ApiError> {
+    let pool = &deployment.db().pool;
+    Workspace::update(
+        pool,
+        workspace.id,
+        request.archived,
+        request.pinned,
+        request.name.as_deref(),
+    )
+    .await?;
+    let updated = Workspace::find_by_id(pool, workspace.id)
+        .await?
+        .ok_or(WorkspaceError::TaskNotFound)?;
+    Ok(ResponseJson(ApiResponse::success(updated)))
 }
 
 #[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
@@ -245,6 +280,8 @@ pub async fn stream_task_attempt_diff_ws(
     Extension(workspace): Extension<Workspace>,
     State(deployment): State<DeploymentImpl>,
 ) -> impl IntoResponse {
+    let _ = Workspace::touch(&deployment.db().pool, workspace.id).await;
+
     let stats_only = params.stats_only;
     ws.on_upgrade(move |socket| async move {
         if let Err(e) = handle_task_attempt_diff_ws(socket, deployment, workspace, stats_only).await
@@ -290,6 +327,61 @@ async fn handle_task_attempt_diff_ws(
                 }
             }
             // Detect client disconnection
+            msg = receiver.next() => {
+                if msg.is_none() {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+pub async fn stream_workspaces_ws(
+    ws: WebSocketUpgrade,
+    Query(query): Query<WorkspaceStreamQuery>,
+    State(deployment): State<DeploymentImpl>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| async move {
+        if let Err(e) = handle_workspaces_ws(socket, deployment, query.archived, query.limit).await
+        {
+            tracing::warn!("workspaces WS closed: {}", e);
+        }
+    })
+}
+
+async fn handle_workspaces_ws(
+    socket: WebSocket,
+    deployment: DeploymentImpl,
+    archived: Option<bool>,
+    limit: Option<i64>,
+) -> anyhow::Result<()> {
+    use futures_util::{SinkExt, StreamExt, TryStreamExt};
+
+    let mut stream = deployment
+        .events()
+        .stream_workspaces_raw(archived, limit)
+        .await?
+        .map_ok(|msg| msg.to_ws_message_unchecked());
+
+    let (mut sender, mut receiver) = socket.split();
+
+    loop {
+        tokio::select! {
+            item = stream.next() => {
+                match item {
+                    Some(Ok(msg)) => {
+                        if sender.send(msg).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Err(e)) => {
+                        tracing::error!("stream error: {}", e);
+                        break;
+                    }
+                    None => break,
+                }
+            }
             msg = receiver.next() => {
                 if msg.is_none() {
                     break;
@@ -368,6 +460,9 @@ pub async fn merge_task_attempt(
     )
     .await?;
     Task::update_status(pool, task.id, TaskStatus::Done).await?;
+    if !workspace.pinned {
+        Workspace::set_archived(pool, workspace.id, true).await?;
+    }
 
     // Stop any running dev servers for this workspace
     let dev_servers =
@@ -430,9 +525,6 @@ pub async fn push_task_attempt_branch(
 ) -> Result<ResponseJson<ApiResponse<(), PushError>>, ApiError> {
     let pool = &deployment.db().pool;
 
-    let github_service = GitHubService::new()?;
-    github_service.check_token().await?;
-
     let workspace_repo =
         WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, request.repo_id)
             .await?
@@ -451,7 +543,7 @@ pub async fn push_task_attempt_branch(
 
     match deployment
         .git()
-        .push_to_github(&worktree_path, &workspace.branch, false)
+        .push_to_remote(&worktree_path, &workspace.branch, false)
     {
         Ok(_) => Ok(ResponseJson(ApiResponse::success(()))),
         Err(GitServiceError::GitCLI(GitCliError::PushRejected(_))) => Ok(ResponseJson(
@@ -467,9 +559,6 @@ pub async fn force_push_task_attempt_branch(
     Json(request): Json<PushTaskAttemptRequest>,
 ) -> Result<ResponseJson<ApiResponse<(), PushError>>, ApiError> {
     let pool = &deployment.db().pool;
-
-    let github_service = GitHubService::new()?;
-    github_service.check_token().await?;
 
     let workspace_repo =
         WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, request.repo_id)
@@ -489,7 +578,7 @@ pub async fn force_push_task_attempt_branch(
 
     deployment
         .git()
-        .push_to_github(&worktree_path, &workspace.branch, true)?;
+        .push_to_remote(&worktree_path, &workspace.branch, true)?;
     Ok(ResponseJson(ApiResponse::success(())))
 }
 
@@ -520,6 +609,9 @@ pub async fn open_task_attempt_in_editor(
         .container()
         .ensure_container_exists(&workspace)
         .await?;
+
+    Workspace::touch(&deployment.db().pool, workspace.id).await?;
+
     let workspace_path = Path::new(&container_ref);
 
     // For single-repo projects, open from the repo directory
@@ -1477,9 +1569,156 @@ pub async fn get_task_attempt_repos(
     Ok(ResponseJson(ApiResponse::success(repos)))
 }
 
+pub async fn get_first_user_message(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<Option<String>>>, ApiError> {
+    let pool = &deployment.db().pool;
+
+    let message = Workspace::get_first_user_message(pool, workspace.id).await?;
+
+    Ok(ResponseJson(ApiResponse::success(message)))
+}
+
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[ts(tag = "type", rename_all = "snake_case")]
+pub enum DeleteWorkspaceError {
+    HasRunningProcesses,
+}
+
+pub async fn delete_workspace(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<
+    (
+        StatusCode,
+        ResponseJson<ApiResponse<(), DeleteWorkspaceError>>,
+    ),
+    ApiError,
+> {
+    let pool = &deployment.db().pool;
+
+    // Check for running execution processes
+    if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace.id)
+        .await?
+    {
+        return Ok((
+            StatusCode::CONFLICT,
+            ResponseJson(ApiResponse::error_with_data(
+                DeleteWorkspaceError::HasRunningProcesses,
+            )),
+        ));
+    }
+
+    // Stop any running dev servers for this workspace
+    let dev_servers =
+        ExecutionProcess::find_running_dev_servers_by_workspace(pool, workspace.id).await?;
+
+    for dev_server in dev_servers {
+        tracing::info!(
+            "Stopping dev server {} before deleting workspace {}",
+            dev_server.id,
+            workspace.id
+        );
+
+        if let Err(e) = deployment
+            .container()
+            .stop_execution(&dev_server, ExecutionProcessStatus::Killed)
+            .await
+        {
+            tracing::error!(
+                "Failed to stop dev server {} for workspace {}: {}",
+                dev_server.id,
+                workspace.id,
+                e
+            );
+        }
+    }
+
+    // Gather data needed for background cleanup
+    let workspace_dir = workspace.container_ref.clone().map(PathBuf::from);
+    let repositories = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
+
+    // Nullify parent_workspace_id for any child tasks before deletion
+    let children_affected = Task::nullify_children_by_workspace_id(pool, workspace.id).await?;
+    if children_affected > 0 {
+        tracing::info!(
+            "Nullified {} child task references before deleting workspace {}",
+            children_affected,
+            workspace.id
+        );
+    }
+
+    // Delete workspace from database (FK CASCADE will handle sessions, execution_processes, etc.)
+    let rows_affected = Workspace::delete(pool, workspace.id).await?;
+
+    if rows_affected == 0 {
+        return Err(ApiError::Database(SqlxError::RowNotFound));
+    }
+
+    deployment
+        .track_if_analytics_allowed(
+            "workspace_deleted",
+            serde_json::json!({
+                "workspace_id": workspace.id.to_string(),
+                "task_id": workspace.task_id.to_string(),
+            }),
+        )
+        .await;
+
+    // Spawn background cleanup task for filesystem resources
+    if let Some(workspace_dir) = workspace_dir {
+        let workspace_id = workspace.id;
+        tokio::spawn(async move {
+            tracing::info!(
+                "Starting background cleanup for workspace {} at {}",
+                workspace_id,
+                workspace_dir.display()
+            );
+
+            if let Err(e) = WorkspaceManager::cleanup_workspace(&workspace_dir, &repositories).await
+            {
+                tracing::error!(
+                    "Background workspace cleanup failed for {} at {}: {}",
+                    workspace_id,
+                    workspace_dir.display(),
+                    e
+                );
+            } else {
+                tracing::info!(
+                    "Background cleanup completed for workspace {}",
+                    workspace_id
+                );
+            }
+        });
+    }
+
+    // Return 202 Accepted to indicate deletion was scheduled
+    Ok((StatusCode::ACCEPTED, ResponseJson(ApiResponse::success(()))))
+}
+
+/// Mark all coding agent turns for a workspace as seen
+#[axum::debug_handler]
+pub async fn mark_seen(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    let pool = &deployment.db().pool;
+
+    CodingAgentTurn::mark_seen_by_workspace_id(pool, workspace.id).await?;
+
+    Ok(ResponseJson(ApiResponse::success(())))
+}
+
 pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     let task_attempt_id_router = Router::new()
-        .route("/", get(get_task_attempt))
+        .route(
+            "/",
+            get(get_task_attempt)
+                .put(update_workspace)
+                .delete(delete_workspace),
+        )
         .route("/run-agent-setup", post(run_agent_setup))
         .route("/gh-cli-setup", post(gh_cli_setup_handler))
         .route("/start-dev-server", post(start_dev_server))
@@ -1492,7 +1731,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/push/force", post(force_push_task_attempt_branch))
         .route("/rebase", post(rebase_task_attempt))
         .route("/conflicts/abort", post(abort_conflicts_task_attempt))
-        .route("/pr", post(pr::create_github_pr))
+        .route("/pr", post(pr::create_pr))
         .route("/pr/attach", post(pr::attach_existing_pr))
         .route("/pr/comments", get(pr::get_pr_comments))
         .route("/open-editor", post(open_task_attempt_in_editor))
@@ -1501,6 +1740,8 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/change-target-branch", post(change_target_branch))
         .route("/rename-branch", post(rename_branch))
         .route("/repos", get(get_task_attempt_repos))
+        .route("/first-message", get(get_first_user_message))
+        .route("/mark-seen", put(mark_seen))
         .layer(from_fn_with_state(
             deployment.clone(),
             load_workspace_middleware,
@@ -1508,6 +1749,8 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
 
     let task_attempts_router = Router::new()
         .route("/", get(get_task_attempts).post(create_task_attempt))
+        .route("/stream/ws", get(stream_workspaces_ws))
+        .route("/summary", post(workspace_summary::get_workspace_summaries))
         .nest("/{id}", task_attempt_id_router)
         .nest("/{id}/images", images::router(deployment));
 
