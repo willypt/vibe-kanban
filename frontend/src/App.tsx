@@ -1,24 +1,37 @@
-import { useEffect } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { I18nextProvider } from 'react-i18next';
 import i18n from '@/i18n';
 import { Projects } from '@/pages/Projects';
 import { ProjectTasks } from '@/pages/ProjectTasks';
-import { FullAttemptLogsPage } from '@/pages/FullAttemptLogs';
 import { NormalLayout } from '@/components/layout/NormalLayout';
 import { NewDesignLayout } from '@/components/layout/NewDesignLayout';
 import { usePostHog } from 'posthog-js/react';
 import { useAuth } from '@/hooks';
 import { usePreviousPath } from '@/hooks/usePreviousPath';
+import { PageLoader } from '@/components/ui/PageLoader';
 
-import {
-  AgentSettings,
-  GeneralSettings,
-  McpSettings,
-  OrganizationSettings,
-  ProjectSettings,
-  SettingsLayout,
-} from '@/pages/settings/';
+import { SettingsLayout } from '@/pages/settings/';
+
+// Lazy-loaded routes for code splitting
+const FullAttemptLogsPage = lazy(() =>
+  import('@/pages/FullAttemptLogs').then((m) => ({ default: m.FullAttemptLogsPage }))
+);
+const GeneralSettings = lazy(() =>
+  import('@/pages/settings/GeneralSettings').then((m) => ({ default: m.GeneralSettings }))
+);
+const ProjectSettings = lazy(() =>
+  import('@/pages/settings/ProjectSettings').then((m) => ({ default: m.ProjectSettings }))
+);
+const OrganizationSettings = lazy(() =>
+  import('@/pages/settings/OrganizationSettings').then((m) => ({ default: m.OrganizationSettings }))
+);
+const AgentSettings = lazy(() =>
+  import('@/pages/settings/AgentSettings').then((m) => ({ default: m.AgentSettings }))
+);
+const McpSettings = lazy(() =>
+  import('@/pages/settings/McpSettings').then((m) => ({ default: m.McpSettings }))
+);
 import { UserSystemProvider, useUserSystem } from '@/components/ConfigProvider';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import { SearchProvider } from '@/contexts/SearchContext';
@@ -41,9 +54,13 @@ import NiceModal from '@ebay/nice-modal-react';
 import { LegacyDesignScope } from '@/components/legacy-design/LegacyDesignScope';
 import { NewDesignScope } from '@/components/ui-new/scope/NewDesignScope';
 
-// New design pages
-import { Workspaces } from '@/pages/ui-new/Workspaces';
-import { WorkspacesLanding } from '@/pages/ui-new/WorkspacesLanding';
+// New design pages (lazy loaded)
+const Workspaces = lazy(() =>
+  import('@/pages/ui-new/Workspaces').then((m) => ({ default: m.Workspaces }))
+);
+const WorkspacesLanding = lazy(() =>
+  import('@/pages/ui-new/WorkspacesLanding').then((m) => ({ default: m.WorkspacesLanding }))
+);
 
 const SentryRoutes = Sentry.withSentryReactRouterV6Routing(Routes);
 
@@ -135,9 +152,11 @@ function AppContent() {
             <Route
               path="/projects/:projectId/tasks/:taskId/attempts/:attemptId/full"
               element={
-                <LegacyDesignScope>
-                  <FullAttemptLogsPage />
-                </LegacyDesignScope>
+                <Suspense fallback={<PageLoader />}>
+                  <LegacyDesignScope>
+                    <FullAttemptLogsPage />
+                  </LegacyDesignScope>
+                </Suspense>
               }
             />
 
@@ -157,14 +176,11 @@ function AppContent() {
               />
               <Route path="/settings/*" element={<SettingsLayout />}>
                 <Route index element={<Navigate to="general" replace />} />
-                <Route path="general" element={<GeneralSettings />} />
-                <Route path="projects" element={<ProjectSettings />} />
-                <Route
-                  path="organizations"
-                  element={<OrganizationSettings />}
-                />
-                <Route path="agents" element={<AgentSettings />} />
-                <Route path="mcp" element={<McpSettings />} />
+                <Route path="general" element={<Suspense fallback={<PageLoader />}><GeneralSettings /></Suspense>} />
+                <Route path="projects" element={<Suspense fallback={<PageLoader />}><ProjectSettings /></Suspense>} />
+                <Route path="organizations" element={<Suspense fallback={<PageLoader />}><OrganizationSettings /></Suspense>} />
+                <Route path="agents" element={<Suspense fallback={<PageLoader />}><AgentSettings /></Suspense>} />
+                <Route path="mcp" element={<Suspense fallback={<PageLoader />}><McpSettings /></Suspense>} />
               </Route>
               <Route
                 path="/mcp-servers"
@@ -189,9 +205,9 @@ function AppContent() {
                 </NewDesignScope>
               }
             >
-              <Route index element={<WorkspacesLanding />} />
-              <Route path="create" element={<Workspaces />} />
-              <Route path=":workspaceId" element={<Workspaces />} />
+              <Route index element={<Suspense fallback={<PageLoader />}><WorkspacesLanding /></Suspense>} />
+              <Route path="create" element={<Suspense fallback={<PageLoader />}><Workspaces /></Suspense>} />
+              <Route path=":workspaceId" element={<Suspense fallback={<PageLoader />}><Workspaces /></Suspense>} />
             </Route>
           </SentryRoutes>
         </SearchProvider>

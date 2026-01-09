@@ -81,5 +81,42 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ["wa-sqlite"],
   },
-  build: { sourcemap: true },
+  build: {
+    sourcemap: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          // React core (cached across deploys)
+          if (id.includes('node_modules/react-dom') ||
+              id.includes('node_modules/react/') ||
+              id.includes('node_modules/react-router')) {
+            return 'react-vendor';
+          }
+          // Rich text editor (~400-600KB)
+          if (id.includes('node_modules/lexical') ||
+              id.includes('node_modules/@lexical')) {
+            return 'lexical';
+          }
+          // Code editor (~300-400KB)
+          if (id.includes('node_modules/@codemirror') ||
+              id.includes('node_modules/@uiw/react-codemirror')) {
+            return 'codemirror';
+          }
+          // Git diff viewer (~200-300KB)
+          if (id.includes('node_modules/@git-diff-view')) {
+            return 'git-diff';
+          }
+          // JSON Schema forms (~150-200KB)
+          if (id.includes('node_modules/@rjsf')) {
+            return 'rjsf';
+          }
+          // UI utilities
+          if (id.includes('node_modules/framer-motion') ||
+              id.includes('node_modules/@radix-ui')) {
+            return 'ui-vendor';
+          }
+        },
+      },
+    },
+  },
 });
