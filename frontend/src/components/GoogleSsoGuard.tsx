@@ -3,6 +3,7 @@ import { useUserSystem } from './ConfigProvider';
 import { GoogleSsoLogin } from './GoogleSsoLogin';
 import { useGoogleSsoSession } from '@/hooks/auth/useGoogleSsoSession';
 import { Loader } from './ui/loader';
+import '@/styles/legacy/index.css';
 
 interface GoogleSsoGuardProps {
   children: ReactNode;
@@ -29,7 +30,7 @@ export function GoogleSsoGuard({ children }: GoogleSsoGuardProps) {
   // Still loading system config or session
   if (systemLoading || sessionLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background">
+      <div className="legacy-design flex min-h-screen items-center justify-center bg-background">
         <Loader message="Checking authentication..." size={32} />
       </div>
     );

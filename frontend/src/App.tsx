@@ -220,9 +220,10 @@ function App() {
   return (
     <BrowserRouter>
       <UserSystemProvider>
-        <GoogleSsoProvider>
-          <GoogleSsoGuard>
-            <ClickedElementsProvider>
+        <ThemeProvider initialTheme={ThemeMode.SYSTEM}>
+          <GoogleSsoProvider>
+            <GoogleSsoGuard>
+              <ClickedElementsProvider>
               <ProjectProvider>
                 <HotkeysProvider initiallyActiveScopes={['*', 'global', 'kanban']}>
                   <NiceModal.Provider>
@@ -231,8 +232,9 @@ function App() {
                 </HotkeysProvider>
               </ProjectProvider>
             </ClickedElementsProvider>
-          </GoogleSsoGuard>
-        </GoogleSsoProvider>
+            </GoogleSsoGuard>
+          </GoogleSsoProvider>
+        </ThemeProvider>
       </UserSystemProvider>
     </BrowserRouter>
   );

@@ -1,6 +1,8 @@
 import { GoogleLogin } from '@react-oauth/google';
 import { useState } from 'react';
 import { googleSsoApi } from '@/lib/api';
+import { Logo } from '@/components/Logo';
+import '@/styles/legacy/index.css';
 
 interface GoogleSsoLoginProps {
   onSuccess?: () => void;
@@ -46,15 +48,18 @@ export function GoogleSsoLogin({ onSuccess, onError }: GoogleSsoLoginProps) {
   };
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-background">
-      <div className="flex flex-col items-center gap-6 rounded-lg border border-border bg-card p-8 shadow-lg">
-        <div className="flex flex-col items-center gap-2">
-          <h1 className="text-2xl font-semibold text-foreground">
-            Sign in to continue
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Authentication is required to access this application
-          </p>
+    <div className="legacy-design" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'hsl(48 33% 97%)' }}>
+      <div className="flex flex-col items-center gap-8 rounded-lg border border-border bg-card p-10 shadow-lg max-w-md w-full mx-4">
+        <div className="flex flex-col items-center gap-4">
+          <Logo />
+          <div className="flex flex-col items-center gap-1 mt-2">
+            <h1 className="text-xl font-semibold text-foreground">
+              Sign in to continue
+            </h1>
+            <p className="text-sm text-muted-foreground text-center">
+              Authentication is required to access this application
+            </p>
+          </div>
         </div>
 
         {error && (
